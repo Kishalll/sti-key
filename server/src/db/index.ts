@@ -7,7 +7,10 @@ if (!fs.existsSync(storageDir)) {
   fs.mkdirSync(storageDir, { recursive: true });
 }
 
-const dbPath = path.join(storageDir, "stickers.db");
+const isTest = process.env.NODE_ENV === "test";
+const dbFileName = isTest ? "test-stickers.db" : "stickers.db";
+const dbPath = path.join(storageDir, dbFileName);
+
 export const db = new DatabaseSync(dbPath);
 
 db.exec("PRAGMA journal_mode = WAL;");

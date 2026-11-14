@@ -6,12 +6,12 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test:phase1": "tsx test/phase1.test.ts",
-    "test:phase2": "tsx test/phase2.test.ts",
-    "test:phase3": "tsx test/phase3.test.ts",
-    "test:phase4": "tsx test/phase4.test.ts",
-    "test:phase6": "tsx test/phase6.test.ts",
-    "test:direct-send": "tsx test/direct-send.test.ts",
+    "test:phase1": "NODE_ENV=test tsx test/phase1.test.ts",
+    "test:phase2": "NODE_ENV=test tsx test/phase2.test.ts",
+    "test:phase3": "NODE_ENV=test tsx test/phase3.test.ts",
+    "test:phase4": "NODE_ENV=test tsx test/phase4.test.ts",
+    "test:phase6": "NODE_ENV=test tsx test/phase6.test.ts",
+    "test:direct-send": "NODE_ENV=test tsx test/direct-send.test.ts",
     "build": "tsc"
   },
   "dependencies": {

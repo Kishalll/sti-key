@@ -18,9 +18,9 @@
     const parts = dataId.split("_");
     for (const part of parts) {
       if (
-        part.includes("@c.us") ||
-        part.includes("@s.whatsapp.net") ||
         part.includes("@g.us") ||
+        part.includes("@s.whatsapp.net") ||
+        part.includes("@c.us") ||
         part.includes("@lid")
       ) {
         const clean = part.replace(/^_+|_+$/g, "");
@@ -41,10 +41,18 @@
   function getActiveChatContext() {
     let chatJid = null;
 
-    // 1. Scan last message row inside chat pane
-    const messageContainers = document.querySelectorAll("#main [data-id]");
+    // 1. Collect message stanza IDs from active chat pane
+    const recentStanzaIds = Array.from(document.querySelectorAll("#main [data-id]"))
+      .slice(-25)
+      .map((el) => el.getAttribute("data-id"))
+      .filter(Boolean);
+
+    // 2. Scan elements for direct JID string
+    const messageContainers = document.querySelectorAll(
+      "#main [data-id*='@'], [data-id*='@'], [data-jid*='@']"
+    );
     for (let i = messageContainers.length - 1; i >= 0; i--) {
-      const dataId = messageContainers[i].getAttribute("data-id");
+      const dataId = messageContainers[i].getAttribute("data-id") || messageContainers[i].getAttribute("data-jid");
       const jid = extractJid(dataId);
       if (jid) {
         chatJid = jid;
@@ -52,47 +60,94 @@
       }
     }
 
-    // 2. Scan active conversation in sidebar
+    // 3. Scan last user clicked message element
+    if (!chatJid && lastInteractedDataId) {
+      chatJid = extractJid(lastInteractedDataId);
+    }
+
+    // 4. Scan active conversation in sidebar
     if (!chatJid) {
-      const activeChatItem = document.querySelector("#pane-side [aria-selected='true'] [data-id]");
+      const activeChatItem = document.querySelector(
+        "#pane-side [aria-selected='true'], div[role='row'][aria-selected='true'], [aria-selected='true']"
+      );
       if (activeChatItem) {
-        chatJid = extractJid(activeChatItem.getAttribute("data-id"));
+        const dataId = activeChatItem.getAttribute("data-id") || activeChatItem.querySelector("[data-id]")?.getAttribute("data-id");
+        if (dataId) {
+          chatJid = extractJid(dataId);
+        }
+        if (!chatJid) {
+          const sideImg = activeChatItem.querySelector("img[src*='u=']");
+          if (sideImg) {
+            const src = sideImg.getAttribute("src") || "";
+            const uMatch = src.match(/u=([0-9\-_]+%40[a-zA-Z0-9\._-]+|[0-9\-_]+@[a-zA-Z0-9\._-]+)/);
+            if (uMatch) {
+              const rawJid = decodeURIComponent(uMatch[1]);
+              chatJid = rawJid.replace(/@c\.us$/i, "@s.whatsapp.net");
+            }
+          }
+        }
       }
     }
 
-    // 3. Scan phone numbers in conversation header
-    if (!chatJid) {
-      const headerTitle = document.querySelector("#main header [title]")?.getAttribute("title");
-      if (headerTitle && /^\+?[0-9\s-]+$/.test(headerTitle)) {
-        const cleanPhone = headerTitle.replace(/[^0-9]/g, "");
+    // 5. Target active conversation header specifically inside #main
+    const mainHeader = document.querySelector("#main header");
+    let chatTitle = null;
+    let isSelfChat = false;
+
+    if (mainHeader) {
+      const headerText = mainHeader.innerText || "";
+      if (
+        headerText.includes("Message yourself") ||
+        headerText.includes("(You)") ||
+        headerText.toLowerCase().includes("message yourself")
+      ) {
+        isSelfChat = true;
+        chatTitle = "Message yourself";
+      }
+
+      if (!chatTitle) {
+        const titleEl = mainHeader.querySelector("span[title]");
+        chatTitle = titleEl?.getAttribute("title") || titleEl?.textContent?.trim() || null;
+      }
+
+      if (!chatTitle) {
+        const spans = Array.from(mainHeader.querySelectorAll("span[dir='auto']"));
+        for (const span of spans) {
+          const t = span.textContent?.trim();
+          if (
+            t &&
+            t.length > 0 &&
+            !/^(online|typing\.\.\.|click here|last seen)/i.test(t)
+          ) {
+            chatTitle = t;
+            break;
+          }
+        }
+      }
+
+      if (!chatJid) {
+        const avatarImg = mainHeader.querySelector("img[src*='u=']");
+        if (avatarImg) {
+          const src = avatarImg.getAttribute("src") || "";
+          const uMatch = src.match(/u=([0-9\-_]+%40[a-zA-Z0-9\._-]+|[0-9\-_]+@[a-zA-Z0-9\._-]+)/);
+          if (uMatch) {
+            const rawJid = decodeURIComponent(uMatch[1]);
+            chatJid = rawJid.replace(/@c\.us$/i, "@s.whatsapp.net");
+          }
+        }
+      }
+
+      if (!chatJid && chatTitle && /^\+?[0-9\s-]+$/.test(chatTitle)) {
+        const cleanPhone = chatTitle.replace(/[^0-9]/g, "");
         if (cleanPhone.length >= 7) {
           chatJid = `${cleanPhone}@s.whatsapp.net`;
         }
       }
     }
 
-    // 4. Scan avatar image in header for u=<jid> parameter
-    if (!chatJid) {
-      const avatarImg = document.querySelector("#main header img[src*='u=']");
-      if (avatarImg) {
-        const src = avatarImg.getAttribute("src") || "";
-        const uMatch = src.match(/u=([0-9\-_]+%40[a-zA-Z0-9\._-]+|[0-9\-_]+@[a-zA-Z0-9\._-]+)/);
-        if (uMatch) {
-          const rawJid = decodeURIComponent(uMatch[1]);
-          chatJid = rawJid.replace(/@c\.us$/i, "@s.whatsapp.net");
-        }
-      }
-    }
-
-    // 4. Chat Title fallback
-    const chatTitle =
-      document.querySelector("#main header span[dir='auto'][title]")?.getAttribute("title") ||
-      document.querySelector("#main header span[dir='auto']")?.textContent?.trim() ||
-      null;
-
-    // 5. Quoted reply context
+    // Quoted reply context
     const replyPreview = document.querySelector(
-      "#main footer [data-testid='quoted-message'], #main footer div[role='region'], #main footer [data-testid='reply-preview']"
+      "#main footer [data-testid='quoted-message'], #main footer div[role='region'], #main footer [data-testid='reply-preview'], footer [data-testid='quoted-message']"
     );
 
     let quotedStanzaId = undefined;
@@ -113,11 +168,47 @@
     return {
       chatJid,
       chatTitle,
+      isSelfChat,
+      recentStanzaIds,
       quotedStanzaId,
       quotedParticipant,
       quotedFromMe,
       hasReplyPreview: Boolean(replyPreview),
     };
+  }
+
+  function reportDomDiagnostics() {
+    try {
+      const allDataIds = Array.from(document.querySelectorAll("#main [data-id], [data-id]"))
+        .slice(-15)
+        .map((el) => el.getAttribute("data-id"));
+
+      const headerEl = document.querySelector("#main header");
+      const headerSummary = headerEl ? {
+        title: headerEl.innerText?.slice(0, 150),
+        imgSrc: headerEl.querySelector("img")?.getAttribute("src")?.slice(0, 150),
+      } : "NO_MAIN_HEADER";
+
+      const mainEl = document.querySelector("#main");
+      const footerEl = document.querySelector("#main footer, footer");
+
+      const diagData = {
+        timestamp: Date.now(),
+        mainExists: Boolean(mainEl),
+        footerExists: Boolean(footerEl),
+        dataIdCount: document.querySelectorAll("#main [data-id]").length,
+        recentDataIds: allDataIds,
+        headerSummary,
+      };
+
+      console.log("[Sti-Key DOM Diagnostics]:", diagData);
+      extensionApi.runtime.sendMessage({
+        type: "DEBUG_DOM",
+        data: diagData,
+      });
+    } catch (err) {
+      console.error("[Sti-Key DOM Diagnostics Error]:", err);
+    }
   }
 
   function createPickerElement() {
@@ -169,6 +260,9 @@
 
     pickerElem.style.display = "block";
     isPickerOpen = true;
+
+    // Report live DOM diagnostic snapshot to server
+    reportDomDiagnostics();
 
     const cards = pickerElem.querySelectorAll(".stikey-card");
     cards.forEach((card) => {
@@ -223,7 +317,7 @@
 
   function closeReplyPreviewIfOpen() {
     const closeBtn = document.querySelector(
-      "#main footer [data-testid='cancel-reply'], #main footer button span[data-icon='x'], #main footer span[data-icon='x']"
+      "#main footer [data-testid='cancel-reply'], #main footer button span[data-icon='x'], #main footer span[data-icon='x'], footer [data-testid='cancel-reply']"
     );
     if (closeBtn) {
       const clickable = closeBtn.closest("button") || closeBtn;
@@ -261,6 +355,23 @@
       ctx,
     });
 
+    const hasAnyIdentifier = Boolean(
+      ctx.chatJid ||
+      ctx.chatTitle ||
+      ctx.isSelfChat ||
+      (ctx.recentStanzaIds && ctx.recentStanzaIds.length > 0)
+    );
+
+    if (!hasAnyIdentifier) {
+      console.warn("[Sti-Key] No destination chat detected. Aborting dispatch.");
+      const hint = pickerElem?.querySelector(".stikey-hint");
+      if (hint) {
+        hint.textContent = "Chat not detected. Click anywhere in chat messages to focus.";
+        hint.style.color = "#f87171";
+      }
+      return;
+    }
+
     clearWhatsAppInput(inputEl);
     hidePicker();
 
@@ -274,6 +385,8 @@
         stickerId: chosen.id,
         chatJid: ctx.chatJid,
         chatTitle: ctx.chatTitle,
+        isSelfChat: ctx.isSelfChat,
+        recentStanzaIds: ctx.recentStanzaIds,
         quotedStanzaId: ctx.quotedStanzaId,
         quotedParticipant: ctx.quotedParticipant,
         quotedFromMe: ctx.quotedFromMe,
@@ -284,11 +397,11 @@
     );
   }
 
-  // Track user clicks on message elements to capture quoted reply context
+  // Track user clicks on message elements to capture quoted reply and chat context
   document.addEventListener(
     "mousedown",
     (e) => {
-      const msgElem = e.target.closest("#main [data-id]");
+      const msgElem = e.target.closest("#main [data-id], [data-id]");
       if (msgElem) {
         lastInteractedDataId = msgElem.getAttribute("data-id");
       }

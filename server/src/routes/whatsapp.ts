@@ -17,7 +17,7 @@ router.post("/connect", async (_req: Request, res: Response) => {
 
 // POST /api/whatsapp/send-direct
 router.post("/send-direct", async (req: Request, res: Response) => {
-  const { stickerId, chatJid, chatTitle, quotedStanzaId, quotedParticipant, quotedFromMe } = req.body;
+  const { stickerId, chatJid, chatTitle, isSelfChat, recentStanzaIds, quotedStanzaId, quotedParticipant, quotedFromMe } = req.body;
   if (!stickerId) {
     res.status(400).json({ error: "Missing stickerId" });
     return;
@@ -28,6 +28,8 @@ router.post("/send-direct", async (req: Request, res: Response) => {
       stickerId,
       chatJid,
       chatTitle,
+      isSelfChat,
+      recentStanzaIds,
       quotedStanzaId,
       quotedParticipant,
       quotedFromMe,
@@ -52,6 +54,12 @@ router.post("/send-sticker", async (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to send sticker" });
   }
+});
+
+// POST /api/whatsapp/debug-dom
+router.post("/debug-dom", (req: Request, res: Response) => {
+  console.log("[WA DOM DEBUG REPORT]:", JSON.stringify(req.body, null, 2));
+  res.json({ success: true });
 });
 
 // POST /api/whatsapp/logout

@@ -51,12 +51,14 @@ extensionApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "SEND_STICKER_DIRECT") {
     (async () => {
       try {
-        const { stickerId, chatJid, chatTitle, quotedStanzaId, quotedParticipant, quotedFromMe } = message;
+        const { stickerId, chatJid, chatTitle, isSelfChat, recentStanzaIds, quotedStanzaId, quotedParticipant, quotedFromMe } = message;
 
         console.log("[Sti-Key Background] Attempting direct sticker dispatch:", {
           stickerId,
           chatJid,
           chatTitle,
+          isSelfChat,
+          recentStanzaIdsCount: recentStanzaIds?.length || 0,
           quotedStanzaId,
         });
 
@@ -68,6 +70,8 @@ extensionApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             stickerId,
             chatJid,
             chatTitle,
+            isSelfChat,
+            recentStanzaIds,
             quotedStanzaId,
             quotedParticipant,
             quotedFromMe,
@@ -95,6 +99,22 @@ extensionApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ success: res.ok, status: res.status, data });
       } catch (err) {
         console.error("[Sti-Key Background] Send direct error:", err);
+        sendResponse({ success: false, error: String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "DEBUG_DOM") {
+    (async () => {
+      try {
+        await fetch(`${SERVER_URL}/api/whatsapp/debug-dom`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(message.data),
+        });
+        sendResponse({ success: true });
+      } catch (err) {
         sendResponse({ success: false, error: String(err) });
       }
     })();

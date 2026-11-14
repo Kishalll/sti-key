@@ -2,6 +2,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   downloadMediaMessage,
+  jidNormalizedUser,
   type WASocket,
   type WAMessage,
 } from "@whiskeysockets/baileys";
@@ -115,6 +116,21 @@ export class WhatsAppService {
     return undefined;
   }
 
+  public async refreshKnownGroups(): Promise<void> {
+    if (!this.sock) return;
+    try {
+      const groups = await this.sock.groupFetchAllParticipating();
+      for (const [jid, metadata] of Object.entries(groups)) {
+        if (metadata.subject) {
+          this.knownChats.set(jid, metadata.subject);
+        }
+      }
+      console.log(`[WA SYNC] Cached ${Object.keys(groups).length} participating groups in memory`);
+    } catch (err) {
+      console.error("[WA SYNC ERROR] Failed to fetch participating groups:", err);
+    }
+  }
+
   public async connect(): Promise<void> {
     if (this.isConnecting || this.sock) return;
     this.isConnecting = true;
@@ -140,6 +156,7 @@ export class WhatsAppService {
 
         if (connection === "open") {
           wsService.broadcastStatus("connected", null);
+          this.refreshKnownGroups().catch(() => {});
         } else if (connection === "close") {
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
           const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -170,17 +187,28 @@ export class WhatsAppService {
         }
       });
 
+      this.sock.ev.on("contacts.update", (updates) => {
+        for (const update of updates) {
+          if (update.id && (update.name || update.notify)) {
+            this.knownChats.set(update.id, update.name || update.notify || "");
+          }
+        }
+      });
+
       this.sock.ev.on("messages.upsert", async ({ messages, type }) => {
         for (const msg of messages) {
           if (msg.key.id) {
             this.recentMessagesMap.set(msg.key.id, msg);
-            if (this.recentMessagesMap.size > 1000) {
+            if (this.recentMessagesMap.size > 2000) {
               const oldestKey = this.recentMessagesMap.keys().next().value;
               if (oldestKey) this.recentMessagesMap.delete(oldestKey);
             }
           }
           if (msg.key.remoteJid) {
             this.lastActiveJid = msg.key.remoteJid;
+            if (msg.pushName) {
+              this.knownChats.set(msg.key.remoteJid, msg.pushName);
+            }
           }
         }
 
@@ -344,6 +372,8 @@ export class WhatsAppService {
     stickerId: string;
     chatJid?: string;
     chatTitle?: string;
+    isSelfChat?: boolean;
+    recentStanzaIds?: string[];
     quotedStanzaId?: string;
     quotedParticipant?: string;
     quotedFromMe?: boolean;
@@ -351,6 +381,8 @@ export class WhatsAppService {
     console.log(`[WA DIRECT SEND START] Dispatch request for sticker ${params.stickerId}:`, {
       chatJid: params.chatJid,
       chatTitle: params.chatTitle,
+      isSelfChat: params.isSelfChat,
+      recentStanzaIdsCount: params.recentStanzaIds?.length || 0,
       quotedStanzaId: params.quotedStanzaId,
     });
 
@@ -371,25 +403,88 @@ export class WhatsAppService {
       throw new Error(`Sticker file missing from disk: ${sticker.file_path}`);
     }
 
-    // Resolve target JID
+    // Helper to get companion's own self JID
+    const getSelfJid = (): string | null => {
+      const raw = this.sock?.user?.id || (this.sock as any)?.authState?.creds?.me?.id;
+      if (!raw) return null;
+      try {
+        return jidNormalizedUser(raw);
+      } catch {
+        return raw.split(":")[0] + "@s.whatsapp.net";
+      }
+    };
+
+    // 1. Resolve target JID by direct JID if provided
     let targetJid = params.chatJid;
+
+    // 2. Resolve self-chat (Message yourself / Note to Self / You)
+    if (!targetJid) {
+      const titleLower = (params.chatTitle || "").toLowerCase().trim();
+      const meName = (this.sock?.user?.name || (this.sock as any)?.authState?.creds?.me?.name || "").toLowerCase().trim();
+      const selfJid = getSelfJid();
+      const myPhone = selfJid ? selfJid.replace(/@s\.whatsapp\.net$/, "") : "";
+
+      if (
+        params.isSelfChat === true ||
+        titleLower.includes("message yourself") ||
+        titleLower.includes("(you)") ||
+        titleLower === "you" ||
+        (meName && (titleLower === meName || titleLower.includes(meName))) ||
+        (myPhone && titleLower.includes(myPhone))
+      ) {
+        targetJid = selfJid || undefined;
+        if (targetJid) {
+          console.log(`[WA DIRECT SEND SUCCESS] Matched self-chat JID ${targetJid} from title "${params.chatTitle}"`);
+        }
+      }
+    }
+
+    // 3. Resolve target JID by matching message stanza IDs in the chat pane
+    if (!targetJid && params.recentStanzaIds && Array.isArray(params.recentStanzaIds)) {
+      for (let i = params.recentStanzaIds.length - 1; i >= 0; i--) {
+        const stanzaId = params.recentStanzaIds[i];
+        if (this.recentMessagesMap.has(stanzaId)) {
+          const matchedMsg = this.recentMessagesMap.get(stanzaId);
+          if (matchedMsg?.key.remoteJid) {
+            targetJid = matchedMsg.key.remoteJid;
+            console.log(`[WA DIRECT SEND SUCCESS] Matched destination JID ${targetJid} from active stanzaId ${stanzaId}`);
+            break;
+          }
+        }
+      }
+    }
+
+    // 4. Resolve target JID by matching chat title against cached groups and contacts
     if (!targetJid && params.chatTitle) {
       const searchTitle = params.chatTitle.toLowerCase().trim();
+      // Exact title match first
       for (const [jid, title] of this.knownChats.entries()) {
-        if (title.toLowerCase().trim() === searchTitle) {
+        const cleanTitle = title.toLowerCase().trim();
+        if (cleanTitle === searchTitle) {
           targetJid = jid;
+          console.log(`[WA DIRECT SEND SUCCESS] Exact match JID ${targetJid} ("${title}") from chat title "${params.chatTitle}"`);
           break;
+        }
+      }
+      // Substring match fallback
+      if (!targetJid) {
+        for (const [jid, title] of this.knownChats.entries()) {
+          const cleanTitle = title.toLowerCase().trim();
+          if (
+            (cleanTitle.length >= 3 && searchTitle.includes(cleanTitle)) ||
+            (searchTitle.length >= 3 && cleanTitle.includes(searchTitle))
+          ) {
+            targetJid = jid;
+            console.log(`[WA DIRECT SEND SUCCESS] Substring match JID ${targetJid} ("${title}") from chat title "${params.chatTitle}"`);
+            break;
+          }
         }
       }
     }
 
     if (!targetJid) {
-      targetJid = this.lastActiveJid || undefined;
-    }
-
-    if (!targetJid) {
       console.error(`[WA DIRECT SEND ERROR] Destination chat JID could not be resolved`);
-      throw new Error("Destination chat JID could not be resolved");
+      throw new Error("Destination chat JID could not be resolved. Please click in the chat conversation.");
     }
 
     const stickerBuffer = await fs.promises.readFile(stickerPath);
