@@ -1,10 +1,12 @@
 (function () {
-  const SERVER_URL = "http://localhost:3001";
+  const extensionApi = typeof chrome !== "undefined" ? chrome : browser;
   let activeCandidates = [];
   let selectedIndex = 0;
   let pickerElem = null;
   let activeQuery = "";
   let debounceTimer = null;
+  let isPickerOpen = false;
+  let lastInteractedDataId = null;
 
   function cleanInputText(str) {
     if (!str) return "";
@@ -28,32 +30,94 @@
     return null;
   }
 
-  function getActiveChatJid() {
-    // 1. Scan message elements inside current chat pane
+  function getChatInput() {
+    return (
+      document.querySelector("#main footer div[contenteditable='true'][role='textbox']") ||
+      document.querySelector("#main footer div[contenteditable='true']") ||
+      document.querySelector("footer div[contenteditable='true']")
+    );
+  }
+
+  function getActiveChatContext() {
+    let chatJid = null;
+
+    // 1. Scan last message row inside chat pane
     const messageContainers = document.querySelectorAll("#main [data-id]");
     for (let i = messageContainers.length - 1; i >= 0; i--) {
       const dataId = messageContainers[i].getAttribute("data-id");
       const jid = extractJid(dataId);
-      if (jid) return jid;
-    }
-
-    // 2. Scan active conversation in sidebar
-    const activeChatItem = document.querySelector("#pane-side [aria-selected='true'] [data-id]");
-    if (activeChatItem) {
-      const jid = extractJid(activeChatItem.getAttribute("data-id"));
-      if (jid) return jid;
-    }
-
-    // 3. Scan phone numbers in conversation header
-    const headerTitle = document.querySelector("#main header [title]")?.getAttribute("title");
-    if (headerTitle && /^\+?[0-9\s-]+$/.test(headerTitle)) {
-      const cleanPhone = headerTitle.replace(/[^0-9]/g, "");
-      if (cleanPhone.length >= 7) {
-        return `${cleanPhone}@s.whatsapp.net`;
+      if (jid) {
+        chatJid = jid;
+        break;
       }
     }
 
-    return null;
+    // 2. Scan active conversation in sidebar
+    if (!chatJid) {
+      const activeChatItem = document.querySelector("#pane-side [aria-selected='true'] [data-id]");
+      if (activeChatItem) {
+        chatJid = extractJid(activeChatItem.getAttribute("data-id"));
+      }
+    }
+
+    // 3. Scan phone numbers in conversation header
+    if (!chatJid) {
+      const headerTitle = document.querySelector("#main header [title]")?.getAttribute("title");
+      if (headerTitle && /^\+?[0-9\s-]+$/.test(headerTitle)) {
+        const cleanPhone = headerTitle.replace(/[^0-9]/g, "");
+        if (cleanPhone.length >= 7) {
+          chatJid = `${cleanPhone}@s.whatsapp.net`;
+        }
+      }
+    }
+
+    // 4. Scan avatar image in header for u=<jid> parameter
+    if (!chatJid) {
+      const avatarImg = document.querySelector("#main header img[src*='u=']");
+      if (avatarImg) {
+        const src = avatarImg.getAttribute("src") || "";
+        const uMatch = src.match(/u=([0-9\-_]+%40[a-zA-Z0-9\._-]+|[0-9\-_]+@[a-zA-Z0-9\._-]+)/);
+        if (uMatch) {
+          const rawJid = decodeURIComponent(uMatch[1]);
+          chatJid = rawJid.replace(/@c\.us$/i, "@s.whatsapp.net");
+        }
+      }
+    }
+
+    // 4. Chat Title fallback
+    const chatTitle =
+      document.querySelector("#main header span[dir='auto'][title]")?.getAttribute("title") ||
+      document.querySelector("#main header span[dir='auto']")?.textContent?.trim() ||
+      null;
+
+    // 5. Quoted reply context
+    const replyPreview = document.querySelector(
+      "#main footer [data-testid='quoted-message'], #main footer div[role='region'], #main footer [data-testid='reply-preview']"
+    );
+
+    let quotedStanzaId = undefined;
+    let quotedParticipant = undefined;
+    let quotedFromMe = undefined;
+
+    if (replyPreview && lastInteractedDataId) {
+      const parts = lastInteractedDataId.split("_");
+      if (parts.length >= 3) {
+        quotedFromMe = parts[0] === "true";
+        quotedStanzaId = parts[2];
+        if (parts.length > 3) {
+          quotedParticipant = parts[3];
+        }
+      }
+    }
+
+    return {
+      chatJid,
+      chatTitle,
+      quotedStanzaId,
+      quotedParticipant,
+      quotedFromMe,
+      hasReplyPreview: Boolean(replyPreview),
+    };
   }
 
   function createPickerElement() {
@@ -87,14 +151,14 @@
           <span class="stikey-badge">.${activeQuery}</span>
           <span>Select Sticker</span>
         </div>
-        <div class="stikey-hint">Enter or click to send · Tab / Arrows to navigate · Esc to close</div>
+        <div class="stikey-hint">Enter / Tab to send · Arrows to navigate · Esc to close</div>
       </div>
       <div class="stikey-candidates-row">
         ${activeCandidates
           .map(
             (stk, idx) => `
           <div class="stikey-card ${idx === selectedIndex ? "stikey-selected" : ""}" data-index="${idx}">
-            <img src="${SERVER_URL}/stickers/${stk.file_path}" alt="${stk.tag}" class="stikey-img" />
+            <img src="${stk.dataUrl || stk.file_path}" alt="${stk.tag}" class="stikey-img" />
             <span class="stikey-tag-label">.${stk.tag}</span>
           </div>
         `
@@ -104,6 +168,7 @@
     `;
 
     pickerElem.style.display = "block";
+    isPickerOpen = true;
 
     const cards = pickerElem.querySelectorAll(".stikey-card");
     cards.forEach((card) => {
@@ -120,25 +185,65 @@
     if (pickerElem) {
       pickerElem.style.display = "none";
     }
+    isPickerOpen = false;
     activeCandidates = [];
     selectedIndex = 0;
     activeQuery = "";
   }
 
-  function clearActiveInput() {
-    const input =
-      document.querySelector("#main footer div[contenteditable='true']") ||
-      document.querySelector("footer div[contenteditable='true']");
+  function clearWhatsAppInput(inputEl) {
+    if (!inputEl) return;
+    inputEl.focus();
 
-    if (input) {
-      input.focus();
-      try {
-        document.execCommand("selectAll", false, undefined);
-        document.execCommand("delete", false, undefined);
-      } catch {
-        input.textContent = "";
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(inputEl);
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
       }
+      document.execCommand("delete", false, null);
+    } catch {
+      inputEl.textContent = "";
     }
+
+    const remaining = cleanInputText(inputEl.innerText || inputEl.textContent || "");
+    if (remaining.length > 0) {
+      inputEl.textContent = "";
+      inputEl.dispatchEvent(
+        new InputEvent("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "deleteContentBackward",
+        })
+      );
+    }
+  }
+
+  function closeReplyPreviewIfOpen() {
+    const closeBtn = document.querySelector(
+      "#main footer [data-testid='cancel-reply'], #main footer button span[data-icon='x'], #main footer span[data-icon='x']"
+    );
+    if (closeBtn) {
+      const clickable = closeBtn.closest("button") || closeBtn;
+      clickable.click();
+    }
+  }
+
+  function searchStickers(query) {
+    return new Promise((resolve) => {
+      extensionApi.runtime.sendMessage(
+        { type: "SEARCH_STICKERS", query },
+        (response) => {
+          if (response && response.success) {
+            resolve(response.stickers || []);
+          } else {
+            resolve([]);
+          }
+        }
+      );
+    });
   }
 
   async function commitSelection(idx) {
@@ -148,49 +253,50 @@
       return;
     }
 
-    const chatJid = getActiveChatJid();
+    const inputEl = getChatInput();
+    const ctx = getActiveChatContext();
     console.log("[Sti-Key] Committing sticker selection:", {
       tag: chosen.tag,
       id: chosen.id,
-      chatJid,
+      ctx,
     });
 
-    if (!chatJid) {
-      console.warn("[Sti-Key] Could not detect active chat JID. Make sure a chat is open.");
-      hidePicker();
-      return;
-    }
-
-    clearActiveInput();
+    clearWhatsAppInput(inputEl);
     hidePicker();
 
-    try {
-      const res = await fetch(`${SERVER_URL}/api/whatsapp/send-sticker`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chatJid,
-          stickerId: chosen.id,
-        }),
-      });
-      const data = await res.json();
-      console.log("[Sti-Key] Server direct dispatch response:", data);
-    } catch (err) {
-      console.error("[Sti-Key] Failed to dispatch sticker directly:", err);
+    if (ctx.hasReplyPreview) {
+      setTimeout(() => closeReplyPreviewIfOpen(), 60);
     }
+
+    extensionApi.runtime.sendMessage(
+      {
+        type: "SEND_STICKER_DIRECT",
+        stickerId: chosen.id,
+        chatJid: ctx.chatJid,
+        chatTitle: ctx.chatTitle,
+        quotedStanzaId: ctx.quotedStanzaId,
+        quotedParticipant: ctx.quotedParticipant,
+        quotedFromMe: ctx.quotedFromMe,
+      },
+      (response) => {
+        console.log("[Sti-Key] Direct dispatch response:", response);
+      }
+    );
   }
 
-  async function searchStickers(query) {
-    try {
-      const res = await fetch(`${SERVER_URL}/api/stickers?search=${encodeURIComponent(query)}`);
-      const data = await res.json();
-      return data.stickers || [];
-    } catch {
-      return [];
-    }
-  }
+  // Track user clicks on message elements to capture quoted reply context
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      const msgElem = e.target.closest("#main [data-id]");
+      if (msgElem) {
+        lastInteractedDataId = msgElem.getAttribute("data-id");
+      }
+    },
+    true
+  );
 
-  // Intercept typing in message box
+  // Live input monitoring for as-you-type autocomplete
   document.addEventListener(
     "input",
     (e) => {
@@ -201,8 +307,8 @@
         return;
       }
 
-      const clean = cleanInputText(target.textContent);
-      const match = clean.match(/^\.([a-zA-Z0-9_-]+)$/);
+      const text = cleanInputText(target.innerText || target.textContent || "");
+      const match = text.match(/^\.([a-zA-Z0-9_-]{1,32})$/);
 
       if (match) {
         const query = match[1];
@@ -217,7 +323,7 @@
           } else {
             hidePicker();
           }
-        }, 50);
+        }, 40);
       } else {
         hidePicker();
       }
@@ -225,67 +331,48 @@
     true
   );
 
-  // Synchronous Enter key interception to prevent message transmission
-  document.addEventListener(
+  // Pre-send capture-phase keyboard interception
+  window.addEventListener(
     "keydown",
     (e) => {
-      if (!e.isTrusted) return;
+      if (!isPickerOpen || activeCandidates.length === 0) return;
 
-      const target = e.target;
-      const isInput = target && (target.isContentEditable || target.getAttribute("contenteditable") === "true");
-      if (!isInput) return;
-
-      // 1. Navigation when picker is open
-      if (pickerElem && pickerElem.style.display !== "none" && activeCandidates.length > 0) {
-        if (e.key === "ArrowRight" || e.key === "Tab") {
-          e.preventDefault();
-          e.stopPropagation();
-          selectedIndex = (selectedIndex + 1) % activeCandidates.length;
-          renderPicker();
-          return;
-        }
-
-        if (e.key === "ArrowLeft") {
-          e.preventDefault();
-          e.stopPropagation();
-          selectedIndex = (selectedIndex - 1 + activeCandidates.length) % activeCandidates.length;
-          renderPicker();
-          return;
-        }
-
-        if (e.key === "Escape") {
-          e.preventDefault();
-          e.stopPropagation();
-          hidePicker();
-          return;
-        }
-
-        if (e.key === "Enter") {
-          e.preventDefault();
-          e.stopPropagation();
-          commitSelection(selectedIndex);
-          return;
-        }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        selectedIndex = (selectedIndex + 1) % activeCandidates.length;
+        renderPicker();
+        return;
       }
 
-      // 2. Direct Enter on .tag text
-      if (e.key === "Enter") {
-        const clean = cleanInputText(target.textContent);
-        const match = clean.match(/^\.([a-zA-Z0-9_-]+)$/);
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        selectedIndex = (selectedIndex - 1 + activeCandidates.length) % activeCandidates.length;
+        renderPicker();
+        return;
+      }
 
-        if (match) {
-          const query = match[1];
-          if (activeCandidates.length > 0 && activeQuery === query) {
-            e.preventDefault();
-            e.stopPropagation();
-            commitSelection(selectedIndex);
-            return;
-          }
-        }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        hidePicker();
+        return;
+      }
+
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        commitSelection(selectedIndex);
+        return;
       }
     },
     true
   );
 
-  console.log("[Sti-Key] WhatsApp Web Companion Extension initialized.");
+  console.log("[Sti-Key] WhatsApp Web Live Autocomplete Extension initialized.");
 })();

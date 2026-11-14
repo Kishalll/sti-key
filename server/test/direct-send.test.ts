@@ -18,7 +18,7 @@ async function runTests(): Promise<void> {
   const baseUrl = `http://127.0.0.1:${port}`;
 
   try {
-    // 1. Missing parameters validation
+    // 1. Missing parameters validation for /send-sticker
     const badRes = await fetch(`${baseUrl}/api/whatsapp/send-sticker`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -26,8 +26,16 @@ async function runTests(): Promise<void> {
     });
     assert.strictEqual(badRes.status, 400, "Must return 400 when parameters are missing");
 
-    // 2. Non-existent sticker validation
-    const missingRes = await fetch(`${baseUrl}/api/whatsapp/send-sticker`, {
+    // 2. Missing parameters validation for /send-direct
+    const badDirectRes = await fetch(`${baseUrl}/api/whatsapp/send-direct`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.strictEqual(badDirectRes.status, 400, "Must return 400 when stickerId is missing");
+
+    // 3. Non-existent sticker validation
+    const missingRes = await fetch(`${baseUrl}/api/whatsapp/send-direct`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -37,7 +45,10 @@ async function runTests(): Promise<void> {
     });
     assert.strictEqual(missingRes.status, 500);
     const missingJson = await missingRes.json();
-    assert(missingJson.error.includes("WhatsApp companion socket is not connected") || missingJson.error.includes("Sticker not found"));
+    assert(
+      missingJson.error.includes("WhatsApp companion socket is not connected") ||
+      missingJson.error.includes("Sticker not found")
+    );
 
     console.log("Direct Sticker Dispatch test passed successfully!");
   } finally {

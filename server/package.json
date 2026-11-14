@@ -5,7 +5,7 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
     "test:phase1": "tsx test/phase1.test.ts",
     "test:phase2": "tsx test/phase2.test.ts",
     "test:phase3": "tsx test/phase3.test.ts",

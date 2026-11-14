@@ -6,6 +6,18 @@
   "icons": {
     "128": "icon.png"
   },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:3001/*",
+    "http://127.0.0.1:3001/*",
+    "https://web.whatsapp.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["https://web.whatsapp.com/*"],
@@ -14,14 +26,9 @@
       "run_at": "document_idle"
     }
   ],
-  "host_permissions": [
-    "https://web.whatsapp.com/*",
-    "http://localhost:3001/*",
-    "http://127.0.0.1:3001/*"
-  ],
   "browser_specific_settings": {
     "gecko": {
-      "id": "sti-key@local",
+      "id": "sti-key@local.dev",
       "strict_min_version": "109.0"
     }
   }

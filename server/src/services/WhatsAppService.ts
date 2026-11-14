@@ -34,6 +34,9 @@ export class WhatsAppService {
   private stickersDir: string;
   private pendingTriggers = new Map<string, PendingTrigger>();
   private isConnecting = false;
+  private knownChats = new Map<string, string>();
+  private lastActiveJid: string | null = null;
+  private recentMessagesMap = new Map<string, WAMessage>();
 
   constructor() {
     this.authDir = path.resolve(process.cwd(), "../storage/auth_info");
@@ -151,7 +154,36 @@ export class WhatsAppService {
         }
       });
 
+      this.sock.ev.on("chats.upsert", (chats) => {
+        for (const chat of chats) {
+          if (chat.id && chat.name) {
+            this.knownChats.set(chat.id, chat.name);
+          }
+        }
+      });
+
+      this.sock.ev.on("contacts.upsert", (contacts) => {
+        for (const contact of contacts) {
+          if (contact.id && (contact.name || contact.notify)) {
+            this.knownChats.set(contact.id, contact.name || contact.notify || "");
+          }
+        }
+      });
+
       this.sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        for (const msg of messages) {
+          if (msg.key.id) {
+            this.recentMessagesMap.set(msg.key.id, msg);
+            if (this.recentMessagesMap.size > 1000) {
+              const oldestKey = this.recentMessagesMap.keys().next().value;
+              if (oldestKey) this.recentMessagesMap.delete(oldestKey);
+            }
+          }
+          if (msg.key.remoteJid) {
+            this.lastActiveJid = msg.key.remoteJid;
+          }
+        }
+
         if (type !== "notify") return;
         for (const msg of messages) {
           await this.handleMessage(msg);
@@ -245,34 +277,15 @@ export class WhatsAppService {
       return;
     }
 
-    // Handle .tag trigger
+    // Handle .tag trigger from chat
     if (parsed.type === "tag" && parsed.tag) {
       const candidates = tagIndex.searchSimilar(parsed.tag);
       if (candidates.length === 0) {
-        // Silent false-trigger ignore
         return;
       }
 
-      if (candidates.length === 1) {
-        // Fast path
-        await this.sendStickerAndCleanUp(msg, candidates[0]);
-      } else {
-        // Multi-match interactive picker path
-        const triggerId = uuidv4();
-        const timer = setTimeout(() => {
-          this.pendingTriggers.delete(triggerId);
-          wsService.broadcastPickerClose(triggerId);
-        }, 30000);
-
-        this.pendingTriggers.set(triggerId, {
-          triggerId,
-          msg,
-          timer,
-          candidates,
-        });
-
-        wsService.broadcastPickerOpen(triggerId, parsed.tag, candidates);
-      }
+      // Fast path: send top candidate directly without dashboard popup
+      await this.sendStickerAndCleanUp(msg, candidates[0]);
     }
   }
 
@@ -282,7 +295,7 @@ export class WhatsAppService {
     const chatJid = msg.key.remoteJid;
     if (!chatJid) return;
 
-    console.log(`[WA CHAT TRIGGER] .tag message intercepted by companion: sending "${sticker.tag}" to ${chatJid} and deleting trigger text`);
+    console.log(`[WA CHAT TRIGGER] .tag message intercepted: sending "${sticker.tag}" to ${chatJid} and deleting trigger text`);
 
     const stickerPath = path.join(this.stickersDir, sticker.file_path);
     if (!fs.existsSync(stickerPath)) return;
@@ -327,18 +340,29 @@ export class WhatsAppService {
     console.log(`[WA PICKER CANCELLED] User closed or timed out picker overlay`);
   }
 
-  public async sendDirectSticker(chatJid: string, stickerId: string): Promise<boolean> {
-    console.log(`[WA DIRECT SEND START] Received direct dispatch request for sticker ${stickerId} to ${chatJid}`);
+  public async sendStickerDirect(params: {
+    stickerId: string;
+    chatJid?: string;
+    chatTitle?: string;
+    quotedStanzaId?: string;
+    quotedParticipant?: string;
+    quotedFromMe?: boolean;
+  }): Promise<boolean> {
+    console.log(`[WA DIRECT SEND START] Dispatch request for sticker ${params.stickerId}:`, {
+      chatJid: params.chatJid,
+      chatTitle: params.chatTitle,
+      quotedStanzaId: params.quotedStanzaId,
+    });
 
     if (!this.sock) {
       console.error(`[WA DIRECT SEND ERROR] WhatsApp companion socket is disconnected`);
       throw new Error("WhatsApp companion socket is not connected");
     }
 
-    const sticker = tagIndex.getById(stickerId);
+    const sticker = tagIndex.getById(params.stickerId);
     if (!sticker) {
-      console.error(`[WA DIRECT SEND ERROR] Sticker ${stickerId} not found in RAM index`);
-      throw new Error(`Sticker not found: ${stickerId}`);
+      console.error(`[WA DIRECT SEND ERROR] Sticker ${params.stickerId} not found in RAM index`);
+      throw new Error(`Sticker not found: ${params.stickerId}`);
     }
 
     const stickerPath = path.join(this.stickersDir, sticker.file_path);
@@ -347,10 +371,46 @@ export class WhatsAppService {
       throw new Error(`Sticker file missing from disk: ${sticker.file_path}`);
     }
 
+    // Resolve target JID
+    let targetJid = params.chatJid;
+    if (!targetJid && params.chatTitle) {
+      const searchTitle = params.chatTitle.toLowerCase().trim();
+      for (const [jid, title] of this.knownChats.entries()) {
+        if (title.toLowerCase().trim() === searchTitle) {
+          targetJid = jid;
+          break;
+        }
+      }
+    }
+
+    if (!targetJid) {
+      targetJid = this.lastActiveJid || undefined;
+    }
+
+    if (!targetJid) {
+      console.error(`[WA DIRECT SEND ERROR] Destination chat JID could not be resolved`);
+      throw new Error("Destination chat JID could not be resolved");
+    }
+
     const stickerBuffer = await fs.promises.readFile(stickerPath);
-    await this.sock.sendMessage(chatJid, { sticker: stickerBuffer });
-    console.log(`[WA DIRECT SEND SUCCESS] Successfully sent "${sticker.tag}" (${sticker.file_size} bytes) directly into ${chatJid} without chat text`);
+
+    let sendOptions: any = undefined;
+    if (params.quotedStanzaId && this.recentMessagesMap.has(params.quotedStanzaId)) {
+      const quotedMsg = this.recentMessagesMap.get(params.quotedStanzaId);
+      sendOptions = { quoted: quotedMsg };
+    }
+
+    await this.sock.sendMessage(targetJid, { sticker: stickerBuffer }, sendOptions);
+    console.log(
+      `[WA DIRECT SEND SUCCESS] Sent "${sticker.tag}" directly to ${targetJid}${
+        sendOptions ? " with quoted reply" : ""
+      }`
+    );
     return true;
+  }
+
+  public async sendDirectSticker(chatJid: string, stickerId: string): Promise<boolean> {
+    return this.sendStickerDirect({ stickerId, chatJid });
   }
 
   public async logout(): Promise<void> {
