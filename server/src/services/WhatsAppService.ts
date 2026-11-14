@@ -167,21 +167,35 @@ export class WhatsAppService {
 
   public async handleMessage(msg: WAMessage): Promise<void> {
     const parsed = this.parseMessage(msg);
-    if (parsed.type === "ignore") return;
-
     const chatJid = msg.key.remoteJid;
+    const text = (
+      msg.message?.conversation ||
+      msg.message?.extendedTextMessage?.text ||
+      ""
+    ).trim();
+
+    if (text) {
+      console.log(`[WA MSG DETECTED] chat: ${chatJid || "unknown"}, fromMe: ${msg.key.fromMe}, text: "${text}", parsedType: ${parsed.type}`);
+    }
+
+    if (parsed.type === "ignore") return;
     if (!chatJid) return;
 
     // Handle .save command
     if (parsed.type === "save") {
-      if (!parsed.quotedSticker) return;
+      if (!parsed.quotedSticker) {
+        console.log(`[WA SAVE IGNORED] .save was sent but does not quote a sticker message`);
+        return;
+      }
 
+      console.log(`[WA SAVE EXECUTING] Saving sticker with tag "${parsed.tag}" in chat ${chatJid}`);
       const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
 
       // Delete .save trigger message immediately from chat
       if (this.sock) {
         try {
           await this.sock.sendMessage(chatJid, { delete: msg.key });
+          console.log(`[WA SAVE CLEANUP] Deleted .save trigger message from ${chatJid}`);
         } catch {
           // Ignored
         }
@@ -268,6 +282,8 @@ export class WhatsAppService {
     const chatJid = msg.key.remoteJid;
     if (!chatJid) return;
 
+    console.log(`[WA CHAT TRIGGER] .tag message intercepted by companion: sending "${sticker.tag}" to ${chatJid} and deleting trigger text`);
+
     const stickerPath = path.join(this.stickersDir, sticker.file_path);
     if (!fs.existsSync(stickerPath)) return;
 
@@ -280,8 +296,9 @@ export class WhatsAppService {
     // Delete trigger message after send confirmation
     try {
       await this.sock.sendMessage(chatJid, { delete: msg.key });
-    } catch {
-      // Ignored
+      console.log(`[WA CHAT TRIGGER] Deleted original .tag text message in ${chatJid}`);
+    } catch (err) {
+      console.error(`[WA CHAT TRIGGER] Failed to delete trigger text message:`, err);
     }
   }
 
@@ -295,6 +312,7 @@ export class WhatsAppService {
 
     const chosen = tagIndex.getById(stickerId);
     if (chosen) {
+      console.log(`[WA PICKER SELECTED] User chose sticker "${chosen.tag}" from picker overlay`);
       await this.sendStickerAndCleanUp(pending.msg, chosen);
     }
   }
@@ -306,6 +324,33 @@ export class WhatsAppService {
     clearTimeout(pending.timer);
     this.pendingTriggers.delete(triggerId);
     wsService.broadcastPickerClose(triggerId);
+    console.log(`[WA PICKER CANCELLED] User closed or timed out picker overlay`);
+  }
+
+  public async sendDirectSticker(chatJid: string, stickerId: string): Promise<boolean> {
+    console.log(`[WA DIRECT SEND START] Received direct dispatch request for sticker ${stickerId} to ${chatJid}`);
+
+    if (!this.sock) {
+      console.error(`[WA DIRECT SEND ERROR] WhatsApp companion socket is disconnected`);
+      throw new Error("WhatsApp companion socket is not connected");
+    }
+
+    const sticker = tagIndex.getById(stickerId);
+    if (!sticker) {
+      console.error(`[WA DIRECT SEND ERROR] Sticker ${stickerId} not found in RAM index`);
+      throw new Error(`Sticker not found: ${stickerId}`);
+    }
+
+    const stickerPath = path.join(this.stickersDir, sticker.file_path);
+    if (!fs.existsSync(stickerPath)) {
+      console.error(`[WA DIRECT SEND ERROR] Sticker file ${sticker.file_path} missing on disk`);
+      throw new Error(`Sticker file missing from disk: ${sticker.file_path}`);
+    }
+
+    const stickerBuffer = await fs.promises.readFile(stickerPath);
+    await this.sock.sendMessage(chatJid, { sticker: stickerBuffer });
+    console.log(`[WA DIRECT SEND SUCCESS] Successfully sent "${sticker.tag}" (${sticker.file_size} bytes) directly into ${chatJid} without chat text`);
+    return true;
   }
 
   public async logout(): Promise<void> {

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Sti-Key WhatsApp Sticker Companion",
+  "version": "1.0.0",
+  "description": "In-chat floating sticker picker and direct sticker sender for WhatsApp Web",
+  "icons": {
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "http://localhost:3001/*",
+    "http://127.0.0.1:3001/*"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "sti-key@local",
+      "strict_min_version": "109.0"
+    }
+  }
+}

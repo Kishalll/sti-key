@@ -94,6 +94,15 @@ sti-key/
 │   ├── test/            # Unified test suite (phases 1, 2, 3, 4, 6)
 │   └── package.json
 │
+├── extension/           # Cross-browser extension for WhatsApp Web (Chromium & Firefox)
+│   ├── manifest.json    # Manifest V3 extension configuration
+│   ├── content.js       # In-chat floating picker and direct dispatch interceptor
+│   ├── content.css      # Dark glassmorphism overlay styles
+│   └── icon.png         # Extension icon
+│
+├── userscript/          # Userscript alternative for Tampermonkey / Violentmonkey
+│   └── sti-key.user.js  # Standalone in-chat picker script
+│
 ├── storage/             # Runtime data (git-ignored)
 │   ├── auth_info/       # Multi-file encrypted credentials for WhatsApp socket
 │   ├── staging/         # Extracted temporary files from ZIP uploads
@@ -139,6 +148,18 @@ sti-key/
    - Go to the **WhatsApp** tab.
    - Scan the displayed QR code with your phone (Settings > Linked Devices > Link a Device).
    - Once linked, the status pill turns green.
+
+4. Install the WhatsApp Web Extension (Chromium & Firefox):
+   - **For Chrome / Brave / Edge:**
+     1. Open `chrome://extensions/` and toggle **Developer mode** on (top right).
+     2. Click **Load unpacked** and select the `extension/` folder in this repository.
+   - **For Firefox:**
+     1. Open `about:debugging#/runtime/this-firefox`.
+     2. Click **Load Temporary Add-on...** and select `extension/manifest.json`.
+   - **Alternative (Userscript via Tampermonkey / Violentmonkey):**
+     Open `userscript/sti-key.user.js` and install it directly into your userscript manager.
+
+Once installed, open `web.whatsapp.com`. Whenever you type `.tag` (such as `.cat`), the floating sticker picker appears directly above your WhatsApp typing bar. Pressing Enter or clicking a sticker clears your input and dispatches the sticker directly into the active chat without ever posting or deleting text.
 
 ---
 

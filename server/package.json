@@ -11,6 +11,7 @@
     "test:phase3": "tsx test/phase3.test.ts",
     "test:phase4": "tsx test/phase4.test.ts",
     "test:phase6": "tsx test/phase6.test.ts",
+    "test:direct-send": "tsx test/direct-send.test.ts",
     "build": "tsc"
   },
   "dependencies": {
