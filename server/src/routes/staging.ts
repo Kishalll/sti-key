@@ -75,7 +75,7 @@ router.post("/commit", async (req: Request, res: Response) => {
 
 // DELETE /api/staging/:stagedId
 router.delete("/:stagedId", (req: Request, res: Response) => {
-  const { stagedId } = req.params;
+  const stagedId = req.params.stagedId as string;
   const discarded = stagingService.discardStagedItem(stagedId);
   if (!discarded) {
     res.status(404).json({ error: "Staged item not found" });

@@ -104,7 +104,7 @@ router.post("/upload", upload.single("file"), async (req: Request, res: Response
 
 // PATCH /api/stickers/:id
 router.patch("/:id", (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = req.params.id as string;
   const newTag = typeof req.body.tag === "string" ? req.body.tag : "";
   if (!newTag.trim()) {
     res.status(400).json({ error: "Tag cannot be empty" });
@@ -122,7 +122,7 @@ router.patch("/:id", (req: Request, res: Response) => {
 
 // DELETE /api/stickers/:id
 router.delete("/:id", (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = req.params.id as string;
   const deleted = tagIndex.delete(id);
   if (!deleted) {
     res.status(404).json({ error: "Sticker not found" });

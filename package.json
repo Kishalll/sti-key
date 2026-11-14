@@ -6,7 +6,7 @@
     "dev:server": "cd server && npm run dev",
     "dev:client": "cd client && npm run dev",
     "dev": "node scripts/dev.js",
-    "test": "cd server && npm run test:phase1 && npm run test:phase2 && npm run test:phase3 && npm run test:phase4",
+    "test": "cd server && npm run test:phase1 && npm run test:phase2 && npm run test:phase3 && npm run test:phase4 && npm run test:phase6",
     "build:server": "cd server && npm run build",
     "build:client": "cd client && npm run build",
     "build": "npm run build:server && npm run build:client"
