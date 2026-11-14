@@ -3,6 +3,7 @@ import cors from "cors";
 import path from "node:path";
 import stickersRouter from "./routes/stickers.js";
 import stagingRouter from "./routes/staging.js";
+import whatsappRouter from "./routes/whatsapp.js";
 
 export function createApp(): express.Express {
   const app = express();
@@ -19,6 +20,7 @@ export function createApp(): express.Express {
 
   app.use("/api/stickers", stickersRouter);
   app.use("/api/staging", stagingRouter);
+  app.use("/api/whatsapp", whatsappRouter);
 
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: Date.now() });
