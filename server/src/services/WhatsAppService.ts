@@ -38,10 +38,14 @@ export class WhatsAppService {
   private knownChats = new Map<string, string>();
   private lastActiveJid: string | null = null;
   private recentMessagesMap = new Map<string, WAMessage>();
+  private maxCachedMessages: number;
 
   constructor() {
     this.authDir = path.resolve(process.cwd(), "../storage/auth_info");
     this.stickersDir = path.resolve(process.cwd(), "../storage/stickers");
+
+    const envLimit = parseInt(process.env.WA_MESSAGE_CACHE_LIMIT || "150", 10);
+    this.maxCachedMessages = !isNaN(envLimit) && envLimit > 0 ? envLimit : 150;
 
     if (!fs.existsSync(this.authDir)) {
       fs.mkdirSync(this.authDir, { recursive: true });
@@ -199,7 +203,7 @@ export class WhatsAppService {
         for (const msg of messages) {
           if (msg.key.id) {
             this.recentMessagesMap.set(msg.key.id, msg);
-            if (this.recentMessagesMap.size > 2000) {
+            if (this.recentMessagesMap.size > this.maxCachedMessages) {
               const oldestKey = this.recentMessagesMap.keys().next().value;
               if (oldestKey) this.recentMessagesMap.delete(oldestKey);
             }
